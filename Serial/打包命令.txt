@@ -1,0 +1,3 @@
+Pycharm打包命令：
+（1）pip install pyinstaller
+（2）pyinstaller -F -w monitor_gui.py 
