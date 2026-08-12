@@ -8,3 +8,6 @@ CTWingDemo_V1.0更新日志：
 （2）功能要点 
 	·USART2调试串口传输
 	·HTS221温湿度数据采集 ·直流电机PWM调速 ·RGB1模式切换
+
+CTWingDemo_V1.1更新日志： 
+	在1.0的基础上完善了UI设计
