@@ -1,0 +1,13 @@
+CTWingDemo_V1.0更新日志： 
+（1）引脚配置 
+	MOA--PB0 MOB--PB1 
+	KEY1--PA6 KEY2--PA7 
+	RGB_CONTROL--PA1 
+	SCL--PB6 SDA--PB7 
+	R--PB2 G--PB10 B--PB11 
+（2）功能要点 
+	·USART2调试串口传输
+	·HTS221温湿度数据采集 ·直流电机PWM调速 ·RGB1模式切换
+
+CTWingDemo_V1.1更新日志： 
+	在1.0的基础上完善了UI设计
