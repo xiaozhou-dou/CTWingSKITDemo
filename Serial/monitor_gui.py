@@ -4,7 +4,7 @@ import serial.tools.list_ports
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QLabel, QPushButton,
                              QComboBox, QTextEdit, QFrame, QRadioButton,
-                             QButtonGroup, QSplitter, QSlider, QCheckBox)
+                             QButtonGroup, QSplitter, QSlider, QCheckBox, QLineEdit)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont, QTextCursor
 
@@ -69,7 +69,7 @@ class STM32MonitorApp(QMainWindow):
 
     def initUI(self):
         self.setWindowTitle('STM32 Industrial Terminal [Cyber Edition]')
-        self.resize(1200, 850)
+        self.resize(1400, 850)
         self.apply_cyber_theme()
 
         central_widget = QWidget()
@@ -333,7 +333,7 @@ class STM32MonitorApp(QMainWindow):
         rgb_hbox.addStretch()
         rgb_hbox.addWidget(self.lbl_rgb)
 
-        # RGB 快速拾色器与引脚状态 (彻底修复高低不平现象)
+        # RGB 快速拾色器与引脚状态
         swatch_frame = QFrame()
         swatch_frame.setStyleSheet("background-color: #0d1117; border: 1px solid #30363d; border-radius: 4px;")
         swatch_hbox = QHBoxLayout(swatch_frame)
@@ -344,7 +344,6 @@ class STM32MonitorApp(QMainWindow):
         for idx, (name, hex_code, pins) in enumerate(self.colors):
             btn = QPushButton()
             btn.setFixedSize(24, 24)
-            # 通过 QSS 直接剥离默认按钮导致的高低差
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {hex_code};
@@ -425,7 +424,7 @@ class STM32MonitorApp(QMainWindow):
         terminal_splitter.addWidget(log_frame)
 
         # ----- 3.2 原始数据收发区 -----
-        raw_frame, raw_layout, raw_header, _ = self.create_panel("01/10 RAW TRANSCEIVER (LOOPBACK TEST)")
+        raw_frame, raw_layout, raw_header, _ = self.create_panel("01/10 RAW TRANSCEIVER")
 
         rx_ctrl_layout = QHBoxLayout()
         lbl_rx = QLabel("<b>RX DATA:</b>")
@@ -464,10 +463,9 @@ class STM32MonitorApp(QMainWindow):
         tx_group_btn.addButton(self.radio_tx_ascii)
         tx_group_btn.addButton(self.radio_tx_hex)
 
-        # 快捷预设指令
         btn_pre_fwd = QPushButton("FWD")
         btn_pre_fwd.setProperty("class", "btn_preset_green")
-        btn_pre_fwd.setFixedHeight(24)  # 强制固定高度，确保整体处于同一水平线
+        btn_pre_fwd.setFixedHeight(24)
         btn_pre_fwd.clicked.connect(lambda: self.apply_raw_preset("5A A5 02 0A 01 09"))
 
         btn_pre_stop = QPushButton("STOP")
@@ -511,9 +509,39 @@ class STM32MonitorApp(QMainWindow):
         raw_layout.addWidget(btn_send_raw)
         terminal_splitter.addWidget(raw_frame)
 
-        # 终端切分布局比例拓宽 (左:右 = 1:1)
-        terminal_splitter.setStretchFactor(0, 1)
-        terminal_splitter.setStretchFactor(1, 1)
+        # ----- 3.3 新增：NB-IoT AT 专用控制终端 -----
+        at_frame, at_layout, at_header, _ = self.create_panel("📡 NB-IoT AT TERMINAL (BC28)")
+
+        self.at_log_text = QTextEdit()
+        self.at_log_text.setReadOnly(True)
+        self.at_log_text.setProperty("class", "terminal")
+
+        at_input_layout = QHBoxLayout()
+        self.at_input = QLineEdit()
+        self.at_input.setProperty("class", "terminal_line_input")
+        self.at_input.setPlaceholderText("Enter AT command (e.g. AT+CSQ)...")
+        self.at_input.returnPressed.connect(self.send_at_cmd)
+
+        btn_send_at = QPushButton("➤ SEND")
+        btn_send_at.setProperty("class", "btn_action")
+        btn_send_at.clicked.connect(self.send_at_cmd)
+
+        btn_clear_at = QPushButton("🗑 CLEAR")
+        btn_clear_at.setProperty("class", "btn_outline_gray_small")
+        btn_clear_at.clicked.connect(self.at_log_text.clear)
+
+        at_input_layout.addWidget(self.at_input)
+        at_input_layout.addWidget(btn_send_at)
+        at_input_layout.addWidget(btn_clear_at)
+
+        at_layout.addWidget(self.at_log_text, 1)
+        at_layout.addLayout(at_input_layout)
+        terminal_splitter.addWidget(at_frame)
+
+        # 终端切分布局比例调节 (Log:Raw:AT = 3:3:4)
+        terminal_splitter.setStretchFactor(0, 3)
+        terminal_splitter.setStretchFactor(1, 3)
+        terminal_splitter.setStretchFactor(2, 4)
         main_layout.addWidget(terminal_splitter, 2)
 
     def apply_cyber_theme(self):
@@ -534,7 +562,6 @@ class STM32MonitorApp(QMainWindow):
             border-radius: 3px; padding: 2px 6px; font-family: Consolas; font-size: 8pt;
         }
 
-        /* 修复方框粗细不匀的问题：改为纯色 2px 边框 */
         .sensor_block { 
             background-color: #0d1117; 
             border: 2px solid #005C66; 
@@ -608,6 +635,8 @@ class STM32MonitorApp(QMainWindow):
         QTextEdit[class="terminal"] { font-size: 9pt; padding: 8px; line-height: 1.5;}
         QTextEdit[class="terminal_raw"] { color: #E5E5E5; font-size: 9pt; padding: 8px; }
         QTextEdit[class="terminal_input"] { color: #00E5FF; font-size: 10pt; background-color: #0d1117; padding: 5px; border: 1px solid #005cc5;}
+
+        QLineEdit[class="terminal_line_input"] { color: #00FF66; font-size: 10pt; font-family: Consolas, monospace; background-color: #0d1117; padding: 5px; border: 1px solid #005cc5; border-radius: 4px;}
 
         QRadioButton { color: #a5b4fc; font-weight: bold; font-family: Consolas; font-size: 9pt;}
         QRadioButton::indicator { width: 12px; height: 12px; border-radius: 6px; border: 2px solid #30363d; background-color: #0d1117; }
@@ -744,6 +773,9 @@ class STM32MonitorApp(QMainWindow):
         self.radio_tx_hex.setChecked(True)
         self.raw_tx_input.setText(hex_str)
 
+    # ==========================================
+    # 发送指令系列函数
+    # ==========================================
     def send_protocol_cmd(self, cmd, data_bytes):
         if not self.serial_port.is_open:
             self.log_sys("ERR", "Port offline!")
@@ -761,6 +793,29 @@ class STM32MonitorApp(QMainWindow):
 
         hex_str = " ".join([f"{x:02X}" for x in frame])
         self.log_sys("TX", f"Cmd:0x{cmd:02X} Payload Sent", hex_str)
+
+    def send_at_cmd(self):
+        """ 发送 AT 指令并自动打包为 0x0D 协议帧透传给 BC28 """
+        cmd_str = self.at_input.text()
+        if not cmd_str: return
+
+        # 自动补全 \r\n 以符合标准 AT 规范
+        if not cmd_str.endswith("\r\n"):
+            if cmd_str.endswith("\r"):
+                cmd_str += "\n"
+            elif cmd_str.endswith("\n"):
+                cmd_str = cmd_str[:-1] + "\r\n"
+            else:
+                cmd_str += "\r\n"
+
+        # 将字符串转为 ASCII 字节并封装进 0x0D 帧
+        data_bytes = cmd_str.encode('ascii')
+        self.send_protocol_cmd(0x0D, list(data_bytes))
+
+        # 将用户键入的信息回显在 AT 终端中
+        self.at_log_text.moveCursor(QTextCursor.End)
+        self.at_log_text.append(f"<span style='color:#00E5FF; font-weight:bold;'>[TX] {cmd_str.strip()}</span>")
+        self.at_input.clear()
 
     def on_speed_changed(self, value):
         snapped_val = round(value / 10) * 10
@@ -808,6 +863,9 @@ class STM32MonitorApp(QMainWindow):
         except ValueError:
             self.log_sys("ERR", "Invalid HEX format in TX window!")
 
+    # ==========================================
+    # 接收指令解析函数
+    # ==========================================
     def read_serial(self):
         if not self.serial_port.is_open: return
 
@@ -906,6 +964,28 @@ class STM32MonitorApp(QMainWindow):
             self.lbl_rgb.setText(f"COLOR: [ {self.colors[c_idx][0]} ]")
             self.lbl_rgb_pins.setText(self.colors[c_idx][2])
             self.combo_rgb.setCurrentIndex(c_idx)
+
+        # =======================================================
+        # 新增解析 0x0E 回显指令并输出至 AT 终端屏幕
+        # =======================================================
+        elif cmd == 0x0E:
+            try:
+                # 解析由 STM32 DMA 转发回来的 BC28 响应
+                at_resp = data.decode('ascii', errors='ignore').strip()
+                if at_resp:
+                    self.at_log_text.moveCursor(QTextCursor.End)
+                    # 将包含换行符的长串分割以便更美观地呈现
+                    for line in at_resp.split('\n'):
+                        line = line.strip()
+                        if line:
+                            self.at_log_text.append(f"<span style='color:#00FF66;'>[RX] {line}</span>")
+
+                    if self.chk_autoscroll.isChecked():
+                        self.at_log_text.moveCursor(QTextCursor.End)
+
+                self.log_sys("RX", f"BC28 AT Reply ({len(data)} bytes)", raw_frame_hex)
+            except Exception as e:
+                self.log_sys("ERR", f"Failed to parse AT response: {str(e)}", raw_frame_hex)
 
 
 if __name__ == '__main__':

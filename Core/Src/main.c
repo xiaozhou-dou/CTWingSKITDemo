@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : STM32 HTS221 I2C + RGB(PA1) + Motor PWM & Speed(PA7)
+  * @brief          : STM32 HTS221 I2C + RGB(PA1) + Motor PWM & Speed(PA7) + BC28(USART1)
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -26,32 +26,34 @@
 
 /* Private variables ---------------------------------------------------------*/
 extern I2C_HandleTypeDef hi2c1;
-extern TIM_HandleTypeDef htim3;  /* 引入 CubeMX 生成的 TIM3 句柄 */
+extern TIM_HandleTypeDef htim3;  
+extern UART_HandleTypeDef huart1; /* 引入 CubeMX 生成的 USART1 句柄，用于连接 BC28 */
 
+/* 串口2 (连接上位机) 接收缓存 */
 uint8_t rx_buf[RX_BUF_SIZE];
 volatile uint16_t rx_len = 0;
 volatile uint8_t rx_done = 0;
 uint8_t parse_buf[PARSE_BUF_SIZE];
 uint16_t parse_len = 0;
 
+/* 串口1 (连接BC28) 接收缓存 */
+uint8_t bc28_rx_buf[256];
+volatile uint16_t bc28_rx_len = 0;
+volatile uint8_t bc28_rx_done = 0;
+
 typedef enum { MOTOR_STOP = 0, MOTOR_FORWARD, MOTOR_REVERSE } MotorState_t;
 MotorState_t motor_state = MOTOR_STOP;
 
-/* 电机速度变量 */
 uint8_t motor_speed = 50; 
-
 volatile uint8_t rgb_color_idx = 0;
-
 uint32_t last_upload_time = 0;
 
-/* 中断消抖时间戳 */
-volatile uint32_t pa1_exti_time = 0;     // PA1 (RGB控制)
-volatile uint32_t key2_exti_time = 0;    // PA7 (调速控制)
+volatile uint32_t pa1_exti_time = 0;     
+volatile uint32_t key2_exti_time = 0;    
 
 uint8_t key1_last = 1;
 uint32_t key1_time = 0;
 
-/* HTS221 Calibration Data */
 int16_t T0_out, T1_out, T0_degC, T1_degC;
 int16_t H0_out, H1_out, H0_rh, H1_rh;
 
@@ -62,11 +64,10 @@ void RGB_SetColor(uint8_t idx);
 void Send_DeviceState(void);
 extern void MX_I2C1_Init(void);
 
-/* ==================== HTS221 传感器健壮驱动 ==================== */
+/* ==================== HTS221 传感器驱动 ==================== */
 void HTS221_Init(void)
 {
     uint8_t who_am_i = 0;
-    
     if (HAL_I2C_Mem_Read(&hi2c1, HTS221_ADDR, 0x0F, 1, &who_am_i, 1, 500) != HAL_OK || who_am_i != 0xBC)
     {
         T0_out = 0; T1_out = 0;
@@ -75,7 +76,6 @@ void HTS221_Init(void)
 
     uint8_t ctrl1 = 0x85; 
     HAL_I2C_Mem_Write(&hi2c1, HTS221_ADDR, 0x20, 1, &ctrl1, 1, 500);
-
     HAL_Delay(50); 
 
     uint8_t buf[16] = {0};
@@ -128,15 +128,22 @@ void Send_SensorData(float temp, float hum)
 
 void Send_DeviceState(void)
 {
-    /* 上传增加了 motor_speed 字节，总长度变为 4 */
     uint8_t buf[8] = {0x5A, 0xA5, 0x04, 0x02, (uint8_t)motor_state, rgb_color_idx, motor_speed, 0};
     buf[7] = buf[2] ^ buf[3] ^ buf[4] ^ buf[5] ^ buf[6]; 
     HAL_UART_Transmit(&huart2, buf, 8, 100);
 }
 
+/* 统一管理 USART1 和 USART2 的 DMA 接收空闲中断 */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-    if(huart->Instance == USART2) { rx_len = Size; rx_done = 1; }
+    if(huart->Instance == USART2) { 
+        rx_len = Size; 
+        rx_done = 1; 
+    }
+    else if(huart->Instance == USART1) {
+        bc28_rx_len = Size;
+        bc28_rx_done = 1;
+    }
 }
 
 void UART2_RxStart(void)
@@ -173,7 +180,6 @@ void UART2_ProcessProtocol(void)
                         uint8_t cmd = parse_buf[i+3];
                         uint8_t *data = &parse_buf[i+4];
                         
-                        /* 增加 0x0C 调速指令解析 */
                         if (cmd == 0x0A && data_len == 2) {
                             Motor_Set((MotorState_t)data[0]);
                             Send_DeviceState(); 
@@ -183,8 +189,12 @@ void UART2_ProcessProtocol(void)
                         } else if (cmd == 0x0C && data_len == 2) {
                             motor_speed = data[0];
                             if(motor_speed > 100) motor_speed = 100;
-                            Motor_Set(motor_state); // 更新PWM
+                            Motor_Set(motor_state);
                             Send_DeviceState(); 
+                        } else if (cmd == 0x0D) {
+                            /* 新增: 0x0D 拦截上位机的 AT 命令并透传给 USART1 (BC28) */
+                            /* data_len 包含了 cmd 的1个字节，所以实际载荷长度是 data_len - 1 */
+                            HAL_UART_Transmit(&huart1, data, data_len - 1, 500);
                         }
                         
                         i += (4 + data_len);
@@ -241,7 +251,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     uint32_t cur = HAL_GetTick();
     
-    /* PA1: RGB 颜色切换 */
     if(GPIO_Pin == GPIO_PIN_1) 
     {
         if(cur - pa1_exti_time > 200) {
@@ -250,33 +259,23 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
             Send_DeviceState(); 
         }
     }
-    /* PA7: 电机速率调速 */
     else if(GPIO_Pin == GPIO_PIN_7) 
     {
         if(cur - key2_exti_time > 200) {
             key2_exti_time = cur;
-            
             if(motor_state != MOTOR_STOP) 
             {
                 motor_speed += 10;
                 if(motor_speed > 100) motor_speed = 0;
-                
                 Motor_Set(motor_state); 
-                Send_DeviceState(); // 通过协议将新速度同步给上位机
+                Send_DeviceState(); 
             }
         }
     }
 }
 
-void EXTI1_IRQHandler(void)
-{
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_1);
-}
-
-void EXTI9_5_IRQHandler(void)
-{
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_7);
-}
+void EXTI1_IRQHandler(void) { HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_1); }
+void EXTI9_5_IRQHandler(void) { HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_7); }
 
 uint8_t Key1_Pressed(void)
 {
@@ -334,12 +333,45 @@ int main(void)
   HTS221_Init();
   Motor_Set(MOTOR_STOP);
   RGB_SetColor(0); 
+  
+  /* 开启 UART2(上位机) 和 UART1(BC28) 的 DMA 接收 */
   UART2_RxStart();
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, bc28_rx_buf, sizeof(bc28_rx_buf));
+  
   /* USER CODE END 2 */
 
   while (1)
   {
     UART2_ProcessProtocol();
+    
+    /* 当收到 BC28 模块的数据时，将其打包转发给 PC 上位机 */
+    if (bc28_rx_done)
+    {
+        HAL_UART_DMAStop(&huart1);
+        
+        uint16_t len_to_send = bc28_rx_len;
+        if(len_to_send > 240) len_to_send = 240; // 防越界
+        
+        uint8_t tx_buf[256];
+        uint8_t data_len = len_to_send + 1; // 1 byte for cmd 0x0E
+        tx_buf[0] = 0x5A;
+        tx_buf[1] = 0xA5;
+        tx_buf[2] = data_len;
+        tx_buf[3] = 0x0E;
+        memcpy(&tx_buf[4], (uint8_t*)bc28_rx_buf, len_to_send);
+        
+        uint8_t xor_cal = data_len ^ 0x0E;
+        for(uint16_t j = 0; j < len_to_send; j++) {
+            xor_cal ^= bc28_rx_buf[j];
+        }
+        tx_buf[4 + len_to_send] = xor_cal;
+        
+        HAL_UART_Transmit(&huart2, tx_buf, 5 + len_to_send, 1000);
+        
+        bc28_rx_done = 0;
+        bc28_rx_len = 0;
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart1, bc28_rx_buf, sizeof(bc28_rx_buf));
+    }
     
     if(Key1_Pressed())
     {
